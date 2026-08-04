@@ -3,7 +3,8 @@
 Sophos Mobile SaaS **does not support syslog**. This integration pulls telemetry
 from the Sophos Central REST APIs and writes JSON lines that Wazuh ingests with
 `log_format json`.
-![Uploading image.png…]()
+<img width="1905" height="924" alt="image" src="https://github.com/user-attachments/assets/59711aef-a2e5-436b-8c03-0ba776c7cc90" />
+
 
 | Source | `sophos_record` |
 | --- | --- |
