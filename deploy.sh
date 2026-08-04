@@ -24,7 +24,7 @@
 # and Wazuh's own rule 5402 would turn them into alerts containing the secret.
 set -euo pipefail
 
-TARGET="${1:-wazuh-user@wazuh-manager.example.com}"
+TARGET="${1:?usage: bash deploy.sh <user>@<wazuh-manager>}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ENVF="$DIR/credentials.env"
 
