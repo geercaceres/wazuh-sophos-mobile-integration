@@ -329,6 +329,21 @@ llegue un payload real, conviene apretarlas a las claves verdaderas.
 **Las credenciales no están en el repo.** `credentials.env` está en `.gitignore`;
 solo se versiona la plantilla.
 
+## Licencia
+
+Copyright (C) 2026 Gerardo Cáceres
+
+Este programa es software libre: podés redistribuirlo y/o modificarlo bajo los
+términos de la **GNU General Public License version 2** publicada por la Free
+Software Foundation. Ver [LICENSE](LICENSE) para el texto completo.
+
+Se distribuye con la esperanza de que sea útil, pero **SIN NINGUNA GARANTÍA**,
+ni siquiera la garantía implícita de comerciabilidad o aptitud para un propósito
+particular.
+
+GPLv2 es la misma licencia que usa Wazuh, así que el código es compatible con el
+ruleset y las integraciones del proyecto.
+
 ## Referencias
 
 - [Sophos Central SIEM Integration (oficial)](https://github.com/sophos/Sophos-Central-SIEM-Integration)
