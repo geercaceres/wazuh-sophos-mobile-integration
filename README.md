@@ -1,9 +1,10 @@
-# Integración Sophos Mobile → Wazuh (vía API)
+# Sophos Mobile → Wazuh integration
 
-Sophos Mobile SaaS **no soporta syslog**. Esta integración usa la API de Sophos
-Central y emite JSON lines que Wazuh ingiere con `log_format json`.
+Sophos Mobile SaaS **does not support syslog**. This integration pulls telemetry
+from the Sophos Central REST APIs and writes JSON lines that Wazuh ingests with
+`log_format json`.
 
-| Fuente | `sophos_record` |
+| Source | `sophos_record` |
 | --- | --- |
 | `siem/v1/events` | `event` |
 | `siem/v1/alerts` | `alert` |
@@ -11,39 +12,62 @@ Central y emite JSON lines que Wazuh ingiere con `log_format json`.
 | `mobile/v1/devices/{id}/compliance-violations` | `compliance_violation` |
 | `mobile/v1/devices/{id}/installed-apps` | `installed_app`, `app_removed`, `forbidden_app` |
 
-> **Estado: desplegado y verificado en vivo** contra el tenant del trial (región
-> `us03`) sobre Wazuh 4.14.7, con el Dell Inspiron enrolado. 42 reglas, suite de
-> 44 tests en `wazuh-logtest` pasando, y dashboard cargado.
+> **Status: deployed and verified against a live tenant** (Sophos Central trial,
+> region `us03`) on Wazuh 4.14.7 with one enrolled Windows device. 42 rules, a
+> 44-case `wazuh-logtest` suite passing, and a 12-panel dashboard.
 
-## Hallazgos de la API real (correcciones a la investigación inicial)
+## How it works
 
-| Asunción inicial | Realidad verificada |
+```
+Sophos Central API ──OAuth2──> custom-sophos-mobile.py ──JSON lines──> /var/log/sophos-mobile/events.json
+                                       │                                        │
+                                  state file                             <localfile> json
+                              (cursors + hashes)                                 │
+                                                                  42 rules → alerts.json → indexer → dashboard
+```
+
+A `command` wodle runs the script every 5 minutes. Authentication is
+`client_credentials` against `id.sophos.com`, followed by `whoami/v1` to resolve
+the tenant ID and data region; every subsequent call carries
+`Authorization: Bearer` plus `X-Tenant-ID`.
+
+The SIEM API only retains 24 hours of data, which is why polling uses a
+persistent cursor. Device and app records are deduplicated by hash, so a run
+that finds nothing new emits nothing.
+
+## API findings
+
+The initial research assumed endpoints and field names that turned out to be
+wrong. These were corrected against real API responses:
+
+| Assumed | Verified |
 | --- | --- |
-| `/smc/v1/devices` | **404** `ApplicationNotFound`. En tenants gestionados por Central el path es **`/mobile/v1/devices`** |
-| `sophos.complianceStatus` con valores `non*`/`violat*` | `compliance.compliant`, booleano |
-| `sophos.managementStatus` | `managedState`, con valor `"managed"` |
-| `sophos.type` contiene `compliance` | `Event::Endpoint::Mobile::NowCompliant`, `::Added`, `::Enrolled`, `::Action::Succeeded` |
-| `limit` libre en SIEM API | Obligatorio **200 ≤ limit ≤ 1000** (fuera de rango → HTTP 400) |
+| `/smc/v1/devices` | **404 `ApplicationNotFound`.** On Central-managed tenants the path is **`/mobile/v1/devices`** |
+| `complianceStatus` matching `non*` / `violat*` | `compliance.compliant`, a boolean |
+| `managementStatus` | `managedState`, value `"managed"` |
+| `type` contains `compliance` | `Event::Endpoint::Mobile::NowCompliant`, `::Added`, `::Enrolled`, `::Action::Succeeded` |
+| free-form `limit` | SIEM API requires **200 ≤ limit ≤ 1000** (outside that range → HTTP 400) |
 
-Endpoints que existen y devuelven 200: `mobile/v1/devices`, `.../compliance-violations`,
-`.../installed-apps`, `mobile/v1/policies`.
-No existen (404): `mobile/v1/apps`, `mobile/v1/tasks`, `.../certificates`, todo `smc/v1/*`.
+Endpoints that exist and return 200: `mobile/v1/devices`,
+`.../compliance-violations`, `.../installed-apps`, `mobile/v1/policies`.
+Endpoints that return 404: `mobile/v1/apps`, `mobile/v1/tasks`,
+`.../certificates`, and all of `smc/v1/*`.
 
-### Payload real de `mobile/v1/devices`
+### Real `mobile/v1/devices` payload
 
 ```json
 {
-  "id": "<device-uuid>", "name": "test-device-01",
+  "id": "<device-uuid>", "name": "device-name",
   "compliance": {"compliant": true},
   "healthState": {"mode": "automatic", "state": "green"},
   "managedState": "managed", "managementType": "fullMdm",
   "os": {"platform": "windows", "name": "Windows 10.0.26200.8973"},
   "ownershipType": "corporate", "lastSeenAt": "2026-08-03T11:44:03.000Z",
-  "email": "...", "tenant": {"id": "<tenant-uuid>"}
+  "email": "user@example.com", "tenant": {"id": "<tenant-uuid>"}
 }
 ```
 
-### Payload real de `siem/v1/events`
+### Real `siem/v1/events` payload
 
 ```json
 {
@@ -51,37 +75,37 @@ No existen (404): `mobile/v1/apps`, `mobile/v1/tasks`, `.../certificates`, todo 
   "severity": "low", "group": "MOBILES",
   "type": "Event::Endpoint::Mobile::NowCompliant",
   "name": "The mobile device is now compliant",
-  "location": "test-device-01", "source": "user name",
+  "location": "device-name", "source": "user name",
   "when": "...", "created_at": "...", "id": "...",
   "customer_id": "...", "user_id": "...", "source_info": {}
 }
 ```
 
-## Instalación
+## Installation
 
-**1. Crear las credenciales en Sophos Central**
+**1. Create the API credential in Sophos Central**
 
-Global Settings → API Credentials Management → Add Credential, rol
-**Service Principal ReadOnly**. El client secret se muestra una sola vez.
+Global Settings → API Credentials Management → Add Credential, role
+**Service Principal ReadOnly**. The client secret is shown only once.
 
-**2. Configurarlas localmente** (`credentials.env` está en `.gitignore`, nunca
-se commitea):
+**2. Configure it locally.** `credentials.env` is gitignored and never
+committed:
 
 ```bash
 cp credentials.env.example credentials.env
 $EDITOR credentials.env
 ```
 
-**3. Desplegar:**
+**3. Deploy:**
 
 ```bash
 bash deploy.sh wazuh-user@wazuh-manager.example.com
 ```
 
-`deploy.sh` genera el archivo de config, lo copia por `scp` (nunca como argumento
-de línea de comandos) y ejecuta `setup-remote.sh` como root, que instala script +
-reglas + credenciales, parchea `ossec.conf`, **valida con `wazuh-analysisd -t`
-antes de reiniciar** e imprime un test de auth/fetch.
+`deploy.sh` generates the config file, copies it with `scp` (never as a
+command-line argument) and runs `setup-remote.sh` as root, which installs the
+script, rules and credentials, patches `ossec.conf`, **validates with
+`wazuh-analysisd -t` before restarting**, and prints an auth/fetch test.
 
 ### Dashboard
 
@@ -90,36 +114,32 @@ scp dashboard/sophos-mobile-dashboard.ndjson dashboard/load-dashboard.sh wazuh-u
 ssh wazuh-user@HOST 'sudo bash /tmp/load-dashboard.sh /tmp/sophos-mobile-dashboard.ndjson'
 ```
 
-Para regenerar los saved objects (por ejemplo con otro index pattern):
+To regenerate the saved objects, for example against a different index pattern:
 
 ```bash
 python3 dashboard/make_dashboard.py out.ndjson [index-pattern-id] [field-suffix]
 ```
 
-### Probar las reglas
+12 panels plus a saved search: metric tiles (total, compliance violations,
+mobile threats, level ≥ 10), a time series by level, pies by record type and
+platform, tables of top rules / devices / event names / app inventory, and the
+latest alerts. It references the stock `wazuh-alerts-*` index pattern without
+modifying it.
+
+### Testing the rules
 
 ```bash
 scp tests/rule-tests.sh wazuh-user@HOST:/tmp/
 ssh wazuh-user@HOST 'sudo bash /tmp/rule-tests.sh'
 ```
 
-44 casos contra `wazuh-logtest`, incluidos escenarios de Android que un tenant
-sin dispositivos Android no puede generar (root, malware, PUA, ADB, apps
-prohibidas).
+44 cases through `wazuh-logtest`, including Android scenarios a Windows-only
+tenant cannot produce (root, malware, PUA, ADB, forbidden apps) plus regressions
+for every verified real payload.
 
-12 paneles + 1 saved search, en inglés:
-métricas (total, violaciones de compliance, amenazas móviles, nivel ≥ 10),
-serie temporal por nivel, torta por tipo de registro, torta por plataforma,
-tablas de reglas / dispositivos / eventos / inventario de apps, y las últimas
-alertas. Referencia el index pattern `wazuh-alerts-*` sin modificarlo.
+## Configuration
 
-```
-https://wazuh-manager.example.com/app/dashboards#/view/sophos-mobile-dashboard
-```
-
-## Configuración
-
-Lo que escribís en `credentials.env` termina en
+What you put in `credentials.env` ends up in
 `/var/ossec/etc/sophos-mobile.json` (root:wazuh, 0640):
 
 ```json
@@ -131,76 +151,76 @@ Lo que escribís en `credentials.env` termina en
 }
 ```
 
-`forbidden_apps` son regex de Python evaluadas contra el identifier y el nombre
-de cada app instalada. Cada coincidencia dispara la regla **100628 (nivel 12)**,
-una vez por dispositivo y app; si se desinstala y se reinstala, vuelve a alertar.
-Esto cubre el caso de "apps prohibidas" **sin depender de que el cliente
-configure compliance policies en Sophos**.
+`forbidden_apps` are Python regexes evaluated against each installed app's
+identifier and name. Every match raises rule **100628 (level 12)**, once per
+device per app; if the app is uninstalled and reinstalled it alerts again. This
+covers the "prohibited apps" use case **without depending on the customer
+configuring compliance policies in Sophos**.
 
-## Verificación
+## Verification
 
 ```bash
 /var/ossec/framework/python/bin/python3 /var/ossec/integrations/custom-sophos-mobile.py --test
 tail -f /var/ossec/logs/alerts/alerts.json | grep sophos_mobile
 ```
 
-Para probar reglas sin esperar eventos reales — un registro por línea, y
-**sin `-q`**, que suprime toda la salida:
+To exercise rules without waiting for real events — one record per line, and
+**without `-q`**, which suppresses all output:
 
 ```bash
 echo '{"integration":"sophos_mobile","sophos_record":"device_status","sophos":{"name":"dev1","compliance":{"compliant":false},"managedState":"managed"}}' | /var/ossec/bin/wazuh-logtest
 ```
 
-## Estructura del evento en Wazuh
+## Event structure in Wazuh
 
 ```json
 {
   "integration": "sophos_mobile",
   "sophos_record": "event | alert | device_status | compliance_violation | installed_app | app_removed | forbidden_app",
-  "sophos": { "...payload de Sophos + campos que agrega la integración..." }
+  "sophos": { "...Sophos payload plus fields the integration adds..." }
 }
 ```
 
-El decoder JSON nativo de Wazuh lo decodifica solo, sin decoder custom. Dos
-detalles que importan para escribir reglas:
+Wazuh's native JSON decoder handles this on its own — no custom decoder. Two
+details matter when writing rules:
 
-- Los objetos anidados se aplanan con puntos (`sophos.compliance.compliant`).
-- **Los booleanos llegan como string**, por eso la regla de compliance matchea
-  `"false"` y no `false`.
+- Nested objects are flattened with dots (`sophos.compliance.compliant`).
+- **Booleans arrive as strings**, which is why the compliance rule matches
+  `"false"` and not `false`.
 
-Todos los campos quedan mapeados como `keyword` en el indexer, así que son
-agregables sin sufijo `.keyword`.
+All fields are mapped as `keyword` in the indexer, so they aggregate without a
+`.keyword` suffix.
 
-## Reglas (100600-100649)
+## Rules (100600-100649)
 
-**El orden en el archivo importa**: Wazuh evalúa las reglas hermanas en orden y
-se queda con la **primera** que matchea, no con la más específica ni la de mayor
-nivel. Por eso las reglas por severidad (100602/100603) están deliberadamente
-**al final** de las hijas de 100601. Si agregás reglas nuevas, ponelas antes.
+**File order matters.** Wazuh evaluates sibling rules in order and keeps the
+**first** match — not the most specific one, and not the highest level. That is
+why the severity rules (100602/100603) are deliberately **last** among the
+children of 100601. Put new rules before them.
 
-### Base y catch-all
+### Base and catch-all
 
-| ID | Nivel | Dispara con |
+| ID | Level | Fires on |
 | --- | --- | --- |
-| **100600** | 3 | **Catch-all: cualquier registro de la integración.** Nada de Sophos se descarta en silencio: lo que no matchee ninguna regla hija alerta acá |
-| 100601 | 3 | `sophos_record=event` sin clasificar |
+| **100600** | 3 | **Catch-all: any record from the integration.** Nothing from Sophos is silently dropped — whatever matches no child rule still alerts here |
+| 100601 | 3 | `sophos_record=event`, unclassified |
 
-Para ver *todo* en el dashboard: `rule.groups:sophos_mobile`.
+To see everything in the dashboard: `rule.groups:sophos_mobile`.
 
-### Eventos SIEM
+### SIEM events
 
-| ID | Nivel | Dispara con |
+| ID | Level | Fires on |
 | --- | --- | --- |
-| 100648 | 12 | Root / jailbreak en el texto del evento |
+| 100648 | 12 | Root / jailbreak in the event text |
 | 100641 | 12 | `type` = `Threat::(Detected\|CleanupFailed)` |
-| 100642 | 12 | malware / malicious app / trojan en el texto |
+| 100642 | 12 | malware / malicious app / trojan in the text |
 | 100643 | 10 | `type` = `Threat::Pua*` |
-| 100649 | 10 | suspicious app / PUA(s) en el texto |
+| 100649 | 10 | suspicious app / PUA(s) in the text |
 | 100644 | 9 | `type` = `Application::(Blocked\|Detected)` |
 | 100645 | 7 | `WebControlViolation`, `WebFilteringBlocked` |
-| 100610 | 3 | `NowCompliant` / `Endpoint::Compliant` (volvió a compliance) |
-| 100611 | 9 | `type` contiene `(Not\|Non\|In)Compliant` |
-| 100612 | 9 | Fallback por texto: `not/non compliant` |
+| 100610 | 3 | `NowCompliant` / `Endpoint::Compliant` (back in compliance) |
+| 100611 | 9 | `type` contains `(Not\|Non\|In)Compliant` |
+| 100612 | 9 | Text fallback: `not` / `non compliant` |
 | 100636 | 9 | ADB / developer mode / USB debugging |
 | 100637 | 9 | Encryption |
 | 100638 | 9 | Forbidden / mandatory / installed apps, unknown sources, third-party profiles |
@@ -213,141 +233,141 @@ Para ver *todo* en el dashboard: `rule.groups:sophos_mobile`.
 | 100602 | 7 | *Fallback*: `severity=medium` |
 | 100603 | 12 | *Fallback*: `severity=high\|critical` |
 
-### Alertas SIEM
+### SIEM alerts
 
-| ID | Nivel | Dispara con |
+| ID | Level | Fires on |
 | --- | --- | --- |
-| 100619 | 12 | Descripción con root / jailbreak / malware |
+| 100619 | 12 | Description mentioning root / jailbreak / malware |
 | 100618 | 12 | `severity=high\|critical` |
-| 100617 | 7 | Cualquier otra alerta |
+| 100617 | 7 | Any other alert |
 
-### Inventario de dispositivos
+### Device inventory
 
-| ID | Nivel | Dispara con |
+| ID | Level | Fires on |
 | --- | --- | --- |
-| 100620 | 3 | `device_status` (cambio de inventario) |
-| **100621** | 9 | **`compliance.compliant` = `false` → NO COMPLIANT** |
-| **100622** | 7 | **`managedState` ≠ `managed` (`negate="yes"`) → salió de MDM** |
+| 100620 | 3 | `device_status` (inventory changed) |
+| **100621** | 9 | **`compliance.compliant` = `false` → NON-COMPLIANT** |
+| **100622** | 7 | **`managedState` ≠ `managed` (`negate="yes"`) → left MDM** |
 | 100623 | 10 | `healthState.state` = `red` |
 | 100624 | 7 | `healthState.state` = `suspicious` |
 
-### Violaciones de compliance e inventario de apps
+### Compliance violations and app inventory
 
-| ID | Nivel | Dispara con |
+| ID | Level | Fires on |
 | --- | --- | --- |
-| 100625 | 9 | `compliance_violation` sin clasificar |
+| 100625 | 9 | `compliance_violation`, unclassified |
 | 100630 | 12 | Root / jailbreak |
 | 100631 | 12 | Malware |
 | 100632 | 10 | Suspicious / PUA(s) |
 | 100633 | 9 | ADB / developer mode |
 | 100634 | 9 | Encryption |
 | 100635 | 9 | Mandatory / forbidden / installed apps, unknown sources |
-| 100640 | 7 | Screen lock, versión de OS, permisos, intervalos de sync, roaming, container, web filtering |
-| 100626 | 3 | `installed_app` (app nueva) |
+| 100640 | 7 | Screen lock, OS version, permissions, sync intervals, roaming, container, web filtering |
+| 100626 | 3 | `installed_app` (new app) |
 | 100627 | 3 | `app_removed` |
-| **100628** | 12 | **`forbidden_app` (match de `forbidden_apps`)** |
+| **100628** | 12 | **`forbidden_app` (matched `forbidden_apps`)** |
 
-Grupos útiles para filtrar: `sophos_mobile`, `compliance_violation`,
+Useful groups for filtering: `sophos_mobile`, `compliance_violation`,
 `mobile_threat`, `mobile_app_inventory`.
 
-## Cobertura Android / iOS: qué está verificado y qué no
+## Android / iOS coverage: what is verified and what is not
 
-**Verificado con datos reales:** todo lo de `device_status`, los 5 tipos de
-evento que produjo el tenant, el polling de `installed-apps` (195 apps en el
-Dell) y el camino completo de `forbidden_app` → alerta 100628.
+**Verified with real data:** everything under `device_status`, the five event
+types the tenant produced, `installed-apps` polling (195 apps on the enrolled
+device), and the complete `forbidden_app` path through to alert 100628.
 
-**No verificado, matcheado por texto:** los identificadores
-`Event::Endpoint::Mobile::*` no están documentados públicamente y este tenant
-solo generó cinco. Las reglas de Android/iOS por lo tanto **no adivinan strings
-de `type`**: matchean los *nombres de las reglas de compliance* de la doc
-oficial de Sophos, que aparecen en el texto del evento y en el payload de la
-violación:
+**Not verified, matched by text:** the `Event::Endpoint::Mobile::*` identifiers
+are not publicly documented and this tenant only produced five of them. The
+Android/iOS rules therefore **do not guess at `type` strings** — they match the
+*compliance rule names* from Sophos' official documentation, which appear in the
+event text and in the violation payload:
 
 - Android: `Root access allowed`, `Android Debug Bridge (ADB) allowed`,
   `Malware apps allowed`, `Suspicious apps allowed`, `PUAs allowed`,
   `Encryption required`, `Screen lock required`, `Minimum/Maximum OS version`,
-  `Mandatory apps`, `Installed apps`, `Intercept X for Mobile permissions can be denied`
+  `Mandatory apps`, `Installed apps`,
+  `Intercept X for Mobile permissions can be denied`
 - iOS: `Allow jailbreak`, `Third-party profiles allowed`,
   `Unmanaged apps from unknown sources allowed`, `Web Filtering turned on`
 
 ([Available compliance rules](https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/CompliancePolicies/AvailableComplianceRules/))
 
-El payload de `compliance-violations` sigue siendo desconocido (el tenant no
-tiene violaciones activas), así que la integración emite además
-**`sophos.violationText`** — la violación entera serializada a un string — y las
-reglas 1006[3x] matchean sobre eso en lugar de sobre claves inventadas. Cuando
-llegue un payload real, conviene apretarlas a las claves verdaderas.
+The `compliance-violations` payload shape is still unknown (the tenant has no
+active violations), so the integration also emits **`sophos.violationText`** —
+the whole violation serialised to a single string — and the `1006[3x]` rules
+match on that instead of on invented keys. Once a real payload is observed,
+tighten them to the real keys.
 
-## Notas operativas
+## Operational notes
 
-- **Primer lote:** cuando logcollector descubre un archivo monitoreado que *ya*
-  tiene contenido, salta al final y nunca lee lo previo. `setup-remote.sh` crea
-  `events.json` vacío antes del restart para evitarlo. Si te quedaste sin las
-  alertas iniciales: `rm -f /var/ossec/var/sophos-mobile.state` y volvé a correr
-  el script.
-- **Baseline de apps:** la primera vez que se ve un dispositivo, su lista de apps
-  se guarda *sin alertar* (si no, entrarían 195 alertas de una). Desde ahí solo
-  se reportan altas y bajas. El chequeo de `forbidden_apps` sí corre en esa
-  primera pasada, porque una app prohibida ya instalada es justo lo que hay que
-  reportar.
-- **Costo por ciclo:** cada corrida hace 2 llamadas SIEM + 1 de devices + 2 por
-  dispositivo (violations + apps). Con muchos dispositivos, subí el `<interval>`
-  o poné `poll_installed_apps: false`.
-- **Crecimiento del log:** `events.json` se appendea indefinidamente; para algo
-  permanente, sumar un logrotate.
-- **No pases secretos por línea de comandos** en este host: `journald` registra
-  los comandos de `sudo` y la regla 5402 los convierte en alertas, con lo cual
-  terminarían en `alerts.json`.
-- **Rotar el secret** al cerrar el POC (Global Settings → API Credentials
-  Management): estuvo pegado en chats y embebido en `setup-remote.sh`.
+- **First batch:** when logcollector discovers a monitored file that *already*
+  has content, it seeks to EOF and never reads what was there. The installer
+  pre-creates `events.json` empty before the restart to avoid this. If you lose
+  the initial alerts anyway: `rm -f /var/ossec/var/sophos-mobile.state` and run
+  the script again.
+- **App baseline:** the first time a device is seen, its app list is recorded
+  *without alerting* — otherwise 195 alerts would land at once. From then on only
+  installs and removals are reported. The `forbidden_apps` check does run on that
+  first pass, since an already-installed prohibited app is exactly what needs
+  reporting.
+- **Cost per cycle:** each run makes 2 SIEM calls + 1 devices call + 2 per device
+  (violations and apps). On large fleets, raise `<interval>` or set
+  `poll_installed_apps: false`.
+- **Log growth:** `events.json` is appended to indefinitely. Add a logrotate rule
+  for anything long-lived.
+- **Never pass secrets on a command line** on a Wazuh host: `journald` records
+  `sudo` command lines and Wazuh's own rule 5402 turns them into alerts, which
+  would put the secret into `alerts.json`.
+- **Rotate the client secret** when a POC ends (Global Settings → API
+  Credentials Management).
 
-## Pendiente
+## Pending
 
-- Confirmar el payload real de `compliance-violations` y de eventos Android
-  cuando haya un dispositivo Android enrolado; después apretar las reglas
-  1006[3x] a las claves reales.
-- `installed-apps` no trae versión de app (al menos en Windows). Si en Android sí
-  viene, se pueden agregar reglas de versiones vulnerables.
-- Si `mobile/v1/devices` devuelve 403/404 en otro tenant, la Mobile API no está
-  habilitada; el script lo loguea y sigue con la SIEM API.
+- Confirm the real `compliance-violations` payload and Android event types once
+  an Android device is enrolled, then tighten the `1006[3x]` rules to the real
+  keys.
+- `installed-apps` does not return an app version (at least on Windows). If it
+  does on Android, rules for vulnerable versions become possible.
+- If `mobile/v1/devices` returns 403/404 on another tenant, the Sophos Mobile API
+  is not enabled there; the script logs it and continues with the SIEM API.
 
-## Archivos
+## Files
 
-| Archivo | Qué es |
+| File | What it is |
 | --- | --- |
-| `integration/custom-sophos-mobile.py` | La integración (corre como command wodle cada 5 min) |
-| `rules/sophos_mobile_rules.xml` | 42 reglas, IDs 100600-100649 |
-| `wazuh/ossec_conf_snippet.xml` | Bloques `<wodle>` + `<localfile>` de referencia |
-| `deploy.sh` | Genera la config, copia todo y ejecuta el instalador por SSH |
-| `setup-remote.sh` | Instalador que corre como root en el manager |
-| `credentials.env.example` | Plantilla de credenciales (copiar a `credentials.env`) |
-| `dashboard/make_dashboard.py` | Genera los saved objects del dashboard |
-| `dashboard/load-dashboard.sh` | Importa el dashboard vía API |
-| `dashboard/sophos-mobile-dashboard.ndjson` | Saved objects generados |
-| `tests/rule-tests.sh` | 44 tests de reglas con `wazuh-logtest` |
+| `integration/custom-sophos-mobile.py` | The integration (runs as a command wodle every 5 min) |
+| `rules/sophos_mobile_rules.xml` | 42 rules, IDs 100600-100649 |
+| `wazuh/ossec_conf_snippet.xml` | Reference `<wodle>` + `<localfile>` blocks |
+| `deploy.sh` | Generates the config, copies everything, runs the installer over SSH |
+| `setup-remote.sh` | Installer, runs as root on the manager |
+| `credentials.env.example` | Credential template (copy to `credentials.env`) |
+| `dashboard/make_dashboard.py` | Generates the dashboard saved objects |
+| `dashboard/load-dashboard.sh` | Imports the dashboard through the API |
+| `dashboard/sophos-mobile-dashboard.ndjson` | Generated saved objects |
+| `tests/rule-tests.sh` | 44 rule tests with `wazuh-logtest` |
 
-**Las credenciales no están en el repo.** `credentials.env` está en `.gitignore`;
-solo se versiona la plantilla.
+**No credentials in the repo.** `credentials.env` is gitignored; only the
+template is versioned.
 
-## Licencia
+## License
 
 Copyright (C) 2026 Gerardo Cáceres
 
-Este programa es software libre: podés redistribuirlo y/o modificarlo bajo los
-términos de la **GNU General Public License version 2** publicada por la Free
-Software Foundation. Ver [LICENSE](LICENSE) para el texto completo.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License version 2** as published by the
+Free Software Foundation. See [LICENSE](LICENSE) for the full text.
 
-Se distribuye con la esperanza de que sea útil, pero **SIN NINGUNA GARANTÍA**,
-ni siquiera la garantía implícita de comerciabilidad o aptitud para un propósito
-particular.
+It is distributed in the hope that it will be useful, but **WITHOUT ANY
+WARRANTY**; without even the implied warranty of merchantability or fitness for
+a particular purpose.
 
-GPLv2 es la misma licencia que usa Wazuh, así que el código es compatible con el
-ruleset y las integraciones del proyecto.
+GPLv2 is the same license Wazuh uses, so this code stays compatible with the
+project's ruleset and integrations.
 
-## Referencias
+## References
 
-- [Sophos Central SIEM Integration (oficial)](https://github.com/sophos/Sophos-Central-SIEM-Integration)
+- [Sophos Central SIEM Integration (official)](https://github.com/sophos/Sophos-Central-SIEM-Integration)
 - [Sophos SIEM API](https://developer.sophos.com/docs/siem-v1/1/overview)
-- [Event y alert types de la API](https://support.sophos.com/support/s/article/KBA-000006285)
+- [API event and alert types](https://support.sophos.com/support/s/article/KBA-000006285)
 - [Available compliance rules (Sophos Mobile)](https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/CompliancePolicies/AvailableComplianceRules/)
 - [Mobile Threat Defense compliance rules](https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/MTDWithIXM/ComplianceRules/index.html)

@@ -1,4 +1,19 @@
 #!/bin/bash
+# deploy.sh - part of the Sophos Mobile to Wazuh integration
+# Copyright (C) 2026 Gerardo Caceres
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License version 2 as published
+# by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+# Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, see <https://www.gnu.org/licenses/>.
+#
 # Deploy the Sophos Mobile -> Wazuh integration to a Wazuh manager over SSH.
 #
 #   cp credentials.env.example credentials.env   # then fill it in

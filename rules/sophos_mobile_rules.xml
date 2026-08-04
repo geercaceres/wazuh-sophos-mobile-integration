@@ -1,4 +1,21 @@
 <!--
+  sophos_mobile_rules.xml - part of the Sophos Mobile to Wazuh integration
+  Copyright (C) 2026 Gerardo Caceres
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms of the GNU General Public License version 2 as published
+  by the Free Software Foundation.
+
+  This program is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+  Public License for more details.
+
+  You should have received a copy of the GNU General Public License along
+  with this program; if not, see <https://www.gnu.org/licenses/>.
+-->
+
+<!--
   Sophos Mobile / Sophos Central custom rules - IDs 100600-100649
 
   ORDER MATTERS. Wazuh evaluates sibling rules (same if_sid parent) in file
@@ -7,7 +24,7 @@
   severity-based catch-alls (100602/100603) are deliberately LAST among the
   children of 100601.
 
-  ---------------------------------------------------------------------------
+  ===========================================================================
   VERIFIED against a live Sophos Central tenant (region us03, 2026-08-03):
 
   siem/v1/events item:
@@ -26,7 +43,7 @@
 
   mobile/v1/devices/{id}/installed-apps item:  identifier, name
 
-  ---------------------------------------------------------------------------
+  ===========================================================================
   NOT VERIFIED - matched by text, not by exact field/type names:
 
   The Event::Endpoint::Mobile::* type identifiers are not documented publicly
@@ -76,7 +93,7 @@
     <description>Sophos Central event on $(sophos.location): $(sophos.name)</description>
   </rule>
 
-  <!-- ---- Highest-priority mobile threats (must precede everything) ---- -->
+  <!-- ==== Highest-priority mobile threats (must precede everything) ==== -->
 
   <!-- Android root / iOS jailbreak. Deliberately avoids matching a bare
        "root" substring to keep app names and paths from firing this. -->
@@ -137,7 +154,7 @@
     <description>Sophos Mobile: web policy violation on $(sophos.location): $(sophos.name)</description>
   </rule>
 
-  <!-- ---- Compliance state ---- -->
+  <!-- ==== Compliance state ==== -->
 
   <!-- Back in compliance. Must precede 100611 so "NowCompliant" is not
        swept up by a broader compliance match. -->
@@ -194,7 +211,7 @@
     <group>compliance_violation,</group>
   </rule>
 
-  <!-- ---- Lifecycle / management ---- -->
+  <!-- ==== Lifecycle / management ==== -->
   <rule id="100613" level="3">
     <if_sid>100601</if_sid>
     <field name="sophos.type" type="pcre2">Mobile::(Added|Enrolled)$</field>
@@ -225,8 +242,8 @@
     <description>Sophos Mobile: device out of date / update failed: $(sophos.location)</description>
   </rule>
 
-  <!-- ---- Severity fallbacks. MUST REMAIN LAST among 100601's children:
-           anything not classified above still gets a sensible level. ---- -->
+  <!-- ==== Severity fallbacks. MUST REMAIN LAST among 100601's children:
+           anything not classified above still gets a sensible level. ==== -->
   <rule id="100602" level="7">
     <if_sid>100601</if_sid>
     <field name="sophos.severity">medium</field>
