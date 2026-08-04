@@ -1,0 +1,386 @@
+<!--
+  Sophos Mobile / Sophos Central custom rules - IDs 100600-100649
+
+  ORDER MATTERS. Wazuh evaluates sibling rules (same if_sid parent) in file
+  order and keeps the FIRST match - not the most specific one, and not the
+  highest level. So specific rules are placed before generic ones, and the
+  severity-based catch-alls (100602/100603) are deliberately LAST among the
+  children of 100601.
+
+  ---------------------------------------------------------------------------
+  VERIFIED against a live Sophos Central tenant (region us03, 2026-08-03):
+
+  siem/v1/events item:
+    created_at, customer_id, endpoint_id, endpoint_type ("mobile"), group
+    ("MOBILES" | "PROTECTION"), id, location (device name), name (human text),
+    severity ("low" | "medium" | "high"), source (user), source_info, type,
+    user_id, when
+  Observed types: Event::Endpoint::Registered, Event::Endpoint::Mobile::Added,
+    ::Mobile::Enrolled, ::Mobile::Action::Succeeded, ::Mobile::NowCompliant
+
+  mobile/v1/devices item:
+    compliance.compliant (boolean), email, healthState.state ("green" |
+    "suspicious" | "red"), healthState.mode, id, lastSeenAt, managedState
+    ("managed" | ...), managementType ("fullMdm"), name, os.platform
+    ("windows" | "android" | "ios"), os.name, ownershipType, tenant.id
+
+  mobile/v1/devices/{id}/installed-apps item:  identifier, name
+
+  ---------------------------------------------------------------------------
+  NOT VERIFIED - matched by text, not by exact field/type names:
+
+  The Event::Endpoint::Mobile::* type identifiers are not documented publicly
+  and this tenant only produced the five listed above. The Android/iOS rules
+  below therefore key off the COMPLIANCE RULE NAMES from Sophos' official
+  docs, which appear in the human-readable event name and in violation
+  payloads, rather than on guessed type strings:
+
+    Android: "Root access allowed", "Android Debug Bridge (ADB) allowed",
+      "Malware apps allowed", "Suspicious apps allowed", "PUAs allowed",
+      "Encryption required", "Screen lock required", "Minimum/Maximum OS
+      version", "Mandatory apps", "Installed apps", "Intercept X for Mobile
+      permissions can be denied", "Maximum interval between ... scans"
+    iOS: "Allow jailbreak", "Third-party profiles allowed", "Unmanaged apps
+      from unknown sources allowed", "Web Filtering turned on"
+    (https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/CompliancePolicies/AvailableComplianceRules/)
+
+  Documented generic endpoint types also matched below (any platform):
+    Event::Endpoint::NonCompliant, ::Compliant, ::Threat::Detected,
+    ::Threat::CleanupFailed, ::Threat::PuaDetected, ::Application::Blocked,
+    ::Application::Detected, ::WebControlViolation, ::WebFilteringBlocked,
+    ::Management::Suspended, ::OutOfDate
+
+  compliance-violations payload keys are UNKNOWN (this tenant has none active),
+  so the integration also emits sophos.violationText - the whole violation
+  serialised to one string - and the 1006[3x] rules match on that. Once a real
+  payload is observed, tighten them to the real keys.
+-->
+<group name="sophos,sophos_mobile,">
+
+  <!-- ================================================================
+       Base rule: EVERY record the integration produces. This is the
+       catch-all - anything that matches no child rule still alerts here,
+       so nothing from Sophos is ever silently dropped.
+       Filter the dashboard on rule.groups:sophos_mobile to see all of it.
+       ================================================================ -->
+  <rule id="100600" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="integration">sophos_mobile</field>
+    <description>Sophos Mobile: $(sophos_record) received.</description>
+  </rule>
+
+  <!-- ================= SIEM events ================= -->
+  <rule id="100601" level="3">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">event</field>
+    <description>Sophos Central event on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <!-- ---- Highest-priority mobile threats (must precede everything) ---- -->
+
+  <!-- Android root / iOS jailbreak. Deliberately avoids matching a bare
+       "root" substring to keep app names and paths from firing this. -->
+  <rule id="100648" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(root access|rooted|rooting|jailbr(eak|oken|eaking))</field>
+    <description>Sophos Mobile: ROOT/JAILBREAK condition on $(sophos.location): $(sophos.name)</description>
+    <mitre>
+      <id>T1404</id>
+    </mitre>
+    <group>mobile_threat,compliance_violation,</group>
+  </rule>
+
+  <rule id="100641" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Threat::(Detected|CleanupFailed)</field>
+    <description>Sophos Mobile: MALWARE on $(sophos.location): $(sophos.name)</description>
+    <mitre>
+      <id>T1476</id>
+    </mitre>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <!-- Malware / suspicious app wording, for platforms that report the
+       compliance rule name rather than a Threat:: type -->
+  <rule id="100642" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(malware|malicious app|trojan)</field>
+    <description>Sophos Mobile: malware condition on $(sophos.location): $(sophos.name)</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100643" level="10">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Threat::Pua</field>
+    <description>Sophos Mobile: PUA on $(sophos.location): $(sophos.name)</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100649" level="10">
+    <if_sid>100601</if_sid>
+    <!-- puas? - the Sophos compliance rule is named "PUAs allowed" (plural) -->
+    <field name="sophos.name" type="pcre2">(?i)(suspicious app|\bpuas?\b|potentially unwanted)</field>
+    <description>Sophos Mobile: suspicious/unwanted app on $(sophos.location): $(sophos.name)</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100644" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Application::(Blocked|Detected)</field>
+    <description>Sophos Mobile: controlled application on $(sophos.location): $(sophos.name)</description>
+    <group>mobile_app_inventory,</group>
+  </rule>
+
+  <rule id="100645" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(WebControlViolation|WebFilteringBlocked)</field>
+    <description>Sophos Mobile: web policy violation on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <!-- ---- Compliance state ---- -->
+
+  <!-- Back in compliance. Must precede 100611 so "NowCompliant" is not
+       swept up by a broader compliance match. -->
+  <rule id="100610" level="3">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(NowCompliant|Endpoint::Compliant)</field>
+    <description>Sophos Mobile: device $(sophos.location) is now compliant again.</description>
+  </rule>
+
+  <!-- Covers both Event::Endpoint::Mobile::NotCompliant (undocumented) and
+       the documented generic Event::Endpoint::NonCompliant -->
+  <rule id="100611" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(Not|Non|In)Compliant</field>
+    <description>Sophos Mobile: device $(sophos.location) became NON-COMPLIANT: $(sophos.name)</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <!-- Text fallback: matches "not compliant", "non-compliant",
+       "noncompliant". Deliberately does not match "now compliant". -->
+  <rule id="100612" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(not|non)[\s_-]?compliant</field>
+    <description>Sophos Mobile: compliance problem on $(sophos.location): $(sophos.name)</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <!-- Specific Android/iOS compliance rule names in the event text -->
+  <rule id="100636" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(android debug bridge|\badb\b|developer mode|usb debugging)</field>
+    <description>Sophos Mobile: ADB/developer mode on $(sophos.location): $(sophos.name)</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <rule id="100637" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(encryption|unencrypted)</field>
+    <description>Sophos Mobile: encryption compliance issue on $(sophos.location): $(sophos.name)</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <rule id="100638" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(forbidden app|mandatory app|installed apps|unknown sources|unmanaged app|third.?party profile)</field>
+    <description>Sophos Mobile: app policy violation on $(sophos.location): $(sophos.name)</description>
+    <group>compliance_violation,mobile_app_inventory,</group>
+  </rule>
+
+  <rule id="100639" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.name" type="pcre2">(?i)(screen ?lock|passcode|password required)</field>
+    <description>Sophos Mobile: screen lock compliance issue on $(sophos.location): $(sophos.name)</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <!-- ---- Lifecycle / management ---- -->
+  <rule id="100613" level="3">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Mobile::(Added|Enrolled)$</field>
+    <description>Sophos Mobile: device enrolled/added: $(sophos.location)</description>
+  </rule>
+
+  <rule id="100614" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Mobile::(Removed|Deleted|Unenrolled|Deregistered)</field>
+    <description>Sophos Mobile: device removed from management: $(sophos.location)</description>
+  </rule>
+
+  <rule id="100615" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Mobile::Action::Failed</field>
+    <description>Sophos Mobile: management action FAILED on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <rule id="100646" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Management::Suspended</field>
+    <description>Sophos Mobile: protection suspended on $(sophos.location)</description>
+  </rule>
+
+  <rule id="100647" level="5">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(OutOfDate|UpdateFailure)</field>
+    <description>Sophos Mobile: device out of date / update failed: $(sophos.location)</description>
+  </rule>
+
+  <!-- ---- Severity fallbacks. MUST REMAIN LAST among 100601's children:
+           anything not classified above still gets a sensible level. ---- -->
+  <rule id="100602" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.severity">medium</field>
+    <description>Sophos Central medium severity event on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <rule id="100603" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.severity">high|critical</field>
+    <description>Sophos Central high severity event on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <!-- ================= SIEM alerts ================= -->
+  <rule id="100617" level="7">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">alert</field>
+    <description>Sophos Central alert: $(sophos.description)</description>
+  </rule>
+
+  <rule id="100619" level="12">
+    <if_sid>100617</if_sid>
+    <field name="sophos.description" type="pcre2">(?i)(root access|rooted|jailbr(eak|oken)|malware|malicious)</field>
+    <description>Sophos Mobile ALERT - root/jailbreak/malware: $(sophos.description)</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100618" level="12">
+    <if_sid>100617</if_sid>
+    <field name="sophos.severity">high|critical</field>
+    <description>Sophos Central high severity alert: $(sophos.description)</description>
+  </rule>
+
+  <!-- ========== Device inventory (mobile/v1/devices) ========== -->
+  <rule id="100620" level="3">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">device_status</field>
+    <description>Sophos Mobile: device $(sophos.name) ($(sophos.os.platform)) inventory changed - managedState=$(sophos.managedState), compliant=$(sophos.compliance.compliant), health=$(sophos.healthState.state)</description>
+  </rule>
+
+  <!-- compliance.compliant is a JSON boolean, decoded as the string "false" -->
+  <rule id="100621" level="9">
+    <if_sid>100620</if_sid>
+    <field name="sophos.compliance.compliant">false</field>
+    <description>Sophos Mobile: device $(sophos.name) ($(sophos.os.platform)) is NON-COMPLIANT.</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <!-- Anything other than "managed" means the device left MDM control -->
+  <rule id="100622" level="7">
+    <if_sid>100620</if_sid>
+    <field name="sophos.managedState" negate="yes" type="pcre2">^managed$</field>
+    <description>Sophos Mobile: device $(sophos.name) is no longer managed (managedState=$(sophos.managedState)).</description>
+  </rule>
+
+  <rule id="100623" level="10">
+    <if_sid>100620</if_sid>
+    <field name="sophos.healthState.state">red</field>
+    <description>Sophos Mobile: device $(sophos.name) health is RED.</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100624" level="7">
+    <if_sid>100620</if_sid>
+    <field name="sophos.healthState.state">suspicious</field>
+    <description>Sophos Mobile: device $(sophos.name) health is SUSPICIOUS.</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <!-- ===== Per-device compliance violations ===== -->
+  <rule id="100625" level="9">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">compliance_violation</field>
+    <description>Sophos Mobile: compliance violation on device $(sophos.deviceName) ($(sophos.os.platform)).</description>
+    <group>compliance_violation,</group>
+  </rule>
+
+  <!-- Children match sophos.violationText (whole payload as one string),
+       because the real key names could not be verified. -->
+  <rule id="100630" level="12">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(root access|rooted|rooting|jailbr(eak|oken|eaking))</field>
+    <description>Sophos Mobile: $(sophos.deviceName) is ROOTED/JAILBROKEN (compliance violation).</description>
+    <mitre>
+      <id>T1404</id>
+    </mitre>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100631" level="12">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(malware|malicious|trojan)</field>
+    <description>Sophos Mobile: MALWARE app on $(sophos.deviceName) (compliance violation).</description>
+    <mitre>
+      <id>T1476</id>
+    </mitre>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100632" level="10">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(suspicious|\bpuas?\b|potentially unwanted)</field>
+    <description>Sophos Mobile: suspicious/unwanted app on $(sophos.deviceName) (compliance violation).</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100633" level="9">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(android debug bridge|\badb\b|developer mode|usb debugging)</field>
+    <description>Sophos Mobile: ADB/developer mode enabled on $(sophos.deviceName).</description>
+    <group>mobile_threat,</group>
+  </rule>
+
+  <rule id="100634" level="9">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(encryption|unencrypted)</field>
+    <description>Sophos Mobile: encryption violation on $(sophos.deviceName).</description>
+  </rule>
+
+  <rule id="100635" level="9">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(mandatory app|forbidden app|installed apps|unknown sources|unmanaged app|third.?party profile)</field>
+    <description>Sophos Mobile: app policy violation on $(sophos.deviceName).</description>
+    <group>mobile_app_inventory,</group>
+  </rule>
+
+  <rule id="100640" level="7">
+    <if_sid>100625</if_sid>
+    <field name="sophos.violationText" type="pcre2">(?i)(screen ?lock|passcode|os version|os update|permission|interval between|synchroniz|roaming|container|web filtering|firewall)</field>
+    <description>Sophos Mobile: configuration compliance violation on $(sophos.deviceName).</description>
+  </rule>
+
+  <!-- ===== Installed-app inventory (mobile/v1/devices/{id}/installed-apps) ===== -->
+  <rule id="100626" level="3">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">installed_app</field>
+    <description>Sophos Mobile: new app on $(sophos.deviceName) ($(sophos.os.platform)): $(sophos.appName)</description>
+    <group>mobile_app_inventory,</group>
+  </rule>
+
+  <rule id="100627" level="3">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">app_removed</field>
+    <description>Sophos Mobile: app removed from $(sophos.deviceName): $(sophos.appIdentifier)</description>
+    <group>mobile_app_inventory,</group>
+  </rule>
+
+  <!-- Driven by the operator-supplied forbidden_apps regex list in
+       /var/ossec/etc/sophos-mobile.json - works today, without waiting for
+       Sophos compliance policies to be configured. -->
+  <rule id="100628" level="12">
+    <if_sid>100600</if_sid>
+    <field name="sophos_record">forbidden_app</field>
+    <description>Sophos Mobile: FORBIDDEN app "$(sophos.appName)" on $(sophos.deviceName) ($(sophos.os.platform)) - matched $(sophos.matchedPattern)</description>
+    <group>compliance_violation,mobile_app_inventory,</group>
+  </rule>
+
+</group>

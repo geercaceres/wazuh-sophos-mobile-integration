@@ -1,0 +1,18 @@
+<!-- Add inside <ossec_config> on the Wazuh manager -->
+
+<!-- 1. Run the integration every 5 minutes -->
+<wodle name="command">
+  <disabled>no</disabled>
+  <tag>sophos-mobile</tag>
+  <command>/var/ossec/framework/python/bin/python3 /var/ossec/integrations/custom-sophos-mobile.py</command>
+  <interval>5m</interval>
+  <ignore_output>yes</ignore_output>
+  <run_on_start>yes</run_on_start>
+  <timeout>120</timeout>
+</wodle>
+
+<!-- 2. Ingest the JSON output -->
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/log/sophos-mobile/events.json</location>
+</localfile>
