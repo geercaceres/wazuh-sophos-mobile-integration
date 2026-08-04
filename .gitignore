@@ -1,0 +1,13 @@
+# Real API credentials — never commit these.
+credentials.env
+
+# Local state / output that only makes sense on the manager
+*.state
+events.json
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+__pycache__/
+*.pyc
