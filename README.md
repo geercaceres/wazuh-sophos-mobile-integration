@@ -3,8 +3,8 @@
 Sophos Mobile SaaS **does not support syslog**. This integration pulls telemetry
 from the Sophos Central REST APIs and writes JSON lines that Wazuh ingests with
 `log_format json`.
-<img width="1905" height="924" alt="image" src="https://github.com/user-attachments/assets/59711aef-a2e5-436b-8c03-0ba776c7cc90" />
 
+![Sophos Mobile dashboard in Wazuh](docs/dashboard.png)
 
 | Source | `sophos_record` |
 | --- | --- |
@@ -403,6 +403,7 @@ tighten them to the real keys.
 | `tests/rule-tests.sh` | 44 rule tests with `wazuh-logtest` |
 | `docs/build_doc.py`, `docs/doc_content.py` | Generate the customer-facing Word document |
 | `docs/Sophos Mobile integration with Wazuh.docx` | That document, 12 sections plus the full source as an appendix |
+| `docs/dashboard.png` | Dashboard screenshot used in this README |
 
 **No credentials in the repo.** `credentials.env` is gitignored; only the
 template is versioned.
