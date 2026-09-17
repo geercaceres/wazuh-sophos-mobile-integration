@@ -118,4 +118,33 @@ run "medium severity fallback" 100602 "$(ev medium 'Unclassified thing' 'Event::
 run "high severity fallback" 100603 "$(ev high 'Unclassified bad thing' 'Event::Endpoint::Mobile::Zzz')"
 
 echo
+echo "======== VERIFIED Sophos mobile event type identifiers ========"
+# Identifiers taken from quadrantsec/sagan-rules sophos.rules, which
+# cross-references the Sophos KB articles for each one.
+run "NowNonCompliant (real identifier)" 100611 "$(ev medium 'The mobile device is now non compliant' 'Event::Endpoint::Mobile::NowNonCompliant')"
+run "NowNonCompliant::UNKNOWN" 100611 "$(ev medium 'The mobile device is now non compliant' 'Event::Endpoint::Mobile::NowNonCompliant::UNKNOWN')"
+run "NowNonCompliant::0" 100611 "$(ev medium 'The mobile device is now non compliant' 'Event::Endpoint::Mobile::NowNonCompliant::0')"
+run "forbidden app (BLACKLISTED_APPS)" 100650 "$(ev medium 'The mobile device is now non compliant. Forbidden app installed.' 'Event::Endpoint::Mobile::NowNonCompliant::GENERAL_BLACKLISTED_APPS')"
+run "forbidden app (WHITELISTED_APPS)" 100650 "$(ev medium 'The mobile device is now non compliant. Forbidden app installed.' 'Event::Endpoint::Mobile::NowNonCompliant::GENERAL_WHITELISTED_APPS')"
+run "mandatory app missing" 100651 "$(ev low 'The mobile device is now non compliant. Mandatory app not installed.' 'Event::Endpoint::Mobile::NowNonCompliant::GENERAL_MANDATORY_APPS')"
+# regression: the compliant rule must NOT swallow NowNonCompliant
+run "NowCompliant still distinct" 100610 "$(ev low 'The mobile device is now compliant.' 'Event::Endpoint::Mobile::NowCompliant')"
+
+echo
+echo "======== MDM platform health ========"
+run "APNs certificate expired" 100652 "$(ev high 'Your APNS certificate has expired.' 'Event::Mobile::ApnsCertificateExpired')"
+run "APNs certificate revoked" 100652 "$(ev high 'APNs certificate was revoked.' 'Event::Mobile::ApnsCertificateRevoked')"
+run "APNs expiring soon" 100653 "$(ev medium 'Your APNS certificate will expire in 1 day.' 'Event::Task::RenewApnsCertificate::2')"
+run "no APNs certificate configured" 100653 "$(ev medium 'No APNS certificate configured' 'Event::Task::NoApnsCertificate')"
+run "APNs certificate renewed" 100654 "$(ev low 'Your APNS certificate was renewed.' 'Event::Mobile::ApnsCertificateRenewed')"
+run "Android enterprise binding lost" 100655 "$(ev high 'Failed to communicate with a Google web service' 'Event::Smc::AfwNotEnrolled')"
+run "Sophos Mobile license expiring" 100656 "$(ev medium 'Your Sophos Mobile License will expire in 1 day.' 'Event::Smc::RenewSmcLicense::2')"
+run "action cancelled" 100657 "$(ev low 'Mobile action cancelled' 'Event::Endpoint::Mobile::Action::Cancelled')"
+run "action skipped" 100657 "$(ev low 'Mobile action skipped' 'Event::Endpoint::Mobile::Action::Skipped')"
+run "new app enrolled" 100658 "$(ev low 'New app enrolled for endpoint' 'Event::Endpoint::Mobile::EnrolledNewApp')"
+run "enrollment data missing" 100659 "$(ev low 'Please add the Exchange information.' 'Event::Endpoint::Mobile::EasDataMissing')"
+run "user email missing" 100659 "$(ev low 'Please add the email address for user.' 'Event::Mobile::UserEmailMissing')"
+run "unenrolled by user" 100614 "$(ev low 'User unenrolled app' 'Event::Endpoint::Mobile::UnenrolledByUser')"
+
+echo
 echo "================ $PASS passed, $FAIL failed ================"

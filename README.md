@@ -15,8 +15,26 @@ from the Sophos Central REST APIs and writes JSON lines that Wazuh ingests with
 | `mobile/v1/devices/{id}/installed-apps` | `installed_app`, `app_removed`, `forbidden_app` |
 
 > **Status: deployed and verified against a live tenant** (Sophos Central trial,
-> region `us03`) on Wazuh 4.14.7 with one enrolled Windows device. 42 rules, a
-> 44-case `wazuh-logtest` suite passing, and a 12-panel dashboard.
+> region `us03`) on Wazuh 4.14.7 with one enrolled Windows device. 52 rules, a
+> 64-case `wazuh-logtest` suite passing, and a 12-panel dashboard.
+
+## Compatibility
+
+Works on **Wazuh 4.x**, manager side only. Validated end to end on 4.14.7.
+
+It deliberately uses nothing version specific: a `command` wodle, a `localfile`
+with `log_format json`, the built-in JSON decoder and custom rules in the
+100000+ range. All of these have been stable across the 4.x line, so any 4.x
+manager should run it unchanged. Older 4.x minors have not been tested, and
+Wazuh 5.x has not been tested either.
+
+| Requirement | Detail |
+| --- | --- |
+| Wazuh version | 4.x manager. Validated on 4.14.7 |
+| Where it runs | The manager, not an agent. No agent is involved at any point |
+| Python | The interpreter bundled with Wazuh at `/var/ossec/framework/python/bin/python3`, which already ships `requests`. Nothing to install |
+| Dashboard | Any Wazuh dashboard with the stock `wazuh-alerts-*` index pattern |
+| Privileges | root on the manager, for the installation only |
 
 ## How it works
 
@@ -25,7 +43,7 @@ Sophos Central API ──OAuth2──> custom-sophos-mobile.py ──JSON lines�
                                        │                                        │
                                   state file                             <localfile> json
                               (cursors + hashes)                                 │
-                                                                  42 rules → alerts.json → indexer → dashboard
+                                                                  52 rules → alerts.json → indexer → dashboard
 ```
 
 A `command` wodle runs the script every 5 minutes. Authentication is
@@ -122,7 +140,7 @@ To regenerate the saved objects, for example against a different index pattern:
 python3 dashboard/make_dashboard.py out.ndjson [index-pattern-id] [field-suffix]
 ```
 
-12 panels plus a saved search: metric tiles (total, compliance violations,
+12 panels, one of which is a saved search: metric tiles (total, compliance violations,
 mobile threats, level ≥ 10), a time series by level, pies by record type and
 platform, tables of top rules / devices / event names / app inventory, and the
 latest alerts. It references the stock `wazuh-alerts-*` index pattern without
@@ -135,7 +153,7 @@ scp tests/rule-tests.sh wazuh-user@HOST:/tmp/
 ssh wazuh-user@HOST 'sudo bash /tmp/rule-tests.sh'
 ```
 
-44 cases through `wazuh-logtest`, including Android scenarios a Windows-only
+64 cases through `wazuh-logtest`, including Android scenarios a Windows-only
 tenant cannot produce (root, malware, PUA, ADB, forbidden apps) plus regressions
 for every verified real payload.
 
@@ -193,12 +211,20 @@ details matter when writing rules:
 All fields are mapped as `keyword` in the indexer, so they aggregate without a
 `.keyword` suffix.
 
-## Rules (100600-100649)
+## Rules (100600-100699)
 
-**File order matters.** Wazuh evaluates sibling rules in order and keeps the
-**first** match — not the most specific one, and not the highest level. That is
-why the severity rules (100602/100603) are deliberately **last** among the
-children of 100601. Put new rules before them.
+**Level decides, file order only breaks ties.** Wazuh sorts the children of a
+rule by level descending and keeps the first that matches; file order applies
+only among rules of the same level. Verified with `wazuh-logtest -v` on 4.14.7:
+the children of 100601 are tried as 100648(12), 100641(12), 100642(12),
+100652(12), 100603(12), 100643(10), 100649(10), 100650(10), 100655(12),
+100644(9), 100611(9), and so on.
+
+So a specific rule needs a level greater than or equal to the generic sibling it
+is meant to beat. 100651 is level 9 rather than 7 for that reason, and 100655 is
+level 12 so it wins over the high-severity fallback 100603. Placing specific
+rules before generic ones is still the convention here, it just is not what
+decides the outcome.
 
 ### Base and catch-all
 
@@ -232,6 +258,16 @@ To see everything in the dashboard: `rule.groups:sophos_mobile`.
 | 100615 | 7 | `type` = `Mobile::Action::Failed` |
 | 100646 | 7 | `Management::Suspended` |
 | 100647 | 5 | `OutOfDate` / `UpdateFailure` |
+| 100650 | 10 | `NowNonCompliant::GENERAL_(BLACKLISTED\|WHITELISTED)_APPS`, forbidden app installed |
+| 100651 | 9 | `NowNonCompliant::GENERAL_MANDATORY_APPS`, mandatory app missing |
+| 100652 | 12 | APNs certificate expired or revoked, iOS management broken |
+| 100653 | 7 | APNs certificate missing or about to expire |
+| 100654 | 3 | APNs certificate renewed |
+| 100655 | 12 | `AfwNotEnrolled`, Android enterprise binding lost |
+| 100656 | 7 | Sophos Mobile license about to expire |
+| 100657 | 5 | `Mobile::Action::(Cancelled\|Skipped)` |
+| 100658 | 3 | `Mobile::EnrolledNewApp` |
+| 100659 | 3 | Enrollment data missing (`EasDataMissing`, `PlaceholderMissing`, `UserEmailMissing`) |
 | 100602 | 7 | *Fallback*: `severity=medium` |
 | 100603 | 12 | *Fallback*: `severity=high\|critical` |
 
@@ -278,11 +314,29 @@ Useful groups for filtering: `sophos_mobile`, `compliance_violation`,
 types the tenant produced, `installed-apps` polling (195 apps on the enrolled
 device), and the complete `forbidden_app` path through to alert 100628.
 
-**Not verified, matched by text:** the `Event::Endpoint::Mobile::*` identifiers
-are not publicly documented and this tenant only produced five of them. The
-Android/iOS rules therefore **do not guess at `type` strings** — they match the
-*compliance rule names* from Sophos' official documentation, which appear in the
-event text and in the violation payload:
+**Confirmed from a public ruleset:** Sophos does not document the mobile event
+type identifiers, but Quadrant's `sagan-rules` project carries the full list,
+each cross-referenced to a Sophos KB article. Those drive the type-based rules:
+
+```
+Event::Endpoint::Mobile::NowCompliant
+Event::Endpoint::Mobile::NowNonCompliant
+  ::0  ::UNKNOWN  ::GENERAL_BLACKLISTED_APPS  ::GENERAL_WHITELISTED_APPS
+  ::GENERAL_MANDATORY_APPS          <- the suffix is the reason
+Event::Endpoint::Mobile::Added ::Enrolled ::EnrolledNewApp
+Event::Endpoint::Mobile::Unenrolled ::UnenrolledByUser
+Event::Endpoint::Mobile::Action::Succeeded ::Failed ::Cancelled ::Skipped
+Event::Endpoint::Mobile::EasDataMissing ::PlaceholderMissing
+Event::Mobile::ApnsCertificateExpired ::ApnsCertificateRenewed ::ApnsCertificateRevoked
+Event::Mobile::UserEmailMissing
+Event::Task::NoApnsCertificate   Event::Task::RenewApnsCertificate::1|2|3
+Event::Smc::RenewSmcLicense::1|2|3   Event::Smc::AfwNotEnrolled
+```
+
+**Still matched by text:** that list covers neither root, jailbreak, encryption,
+passcode nor OS version, so those rules match the *compliance rule names* from
+Sophos' official documentation, which appear in the event text and in the
+violation payload:
 
 - Android: `Root access allowed`, `Android Debug Bridge (ADB) allowed`,
   `Malware apps allowed`, `Suspicious apps allowed`, `PUAs allowed`,
@@ -338,7 +392,7 @@ tighten them to the real keys.
 | File | What it is |
 | --- | --- |
 | `integration/custom-sophos-mobile.py` | The integration (runs as a command wodle every 5 min) |
-| `rules/sophos_mobile_rules.xml` | 42 rules, IDs 100600-100649 |
+| `rules/sophos_mobile_rules.xml` | 52 rules, IDs 100600-100699 |
 | `wazuh/ossec_conf_snippet.xml` | Reference `<wodle>` + `<localfile>` blocks |
 | `deploy.sh` | Generates the config, copies everything, runs the installer over SSH |
 | `setup-remote.sh` | Installer, runs as root on the manager |
@@ -373,3 +427,6 @@ project's ruleset and integrations.
 - [API event and alert types](https://support.sophos.com/support/s/article/KBA-000006285)
 - [Available compliance rules (Sophos Mobile)](https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/CompliancePolicies/AvailableComplianceRules/)
 - [Mobile Threat Defense compliance rules](https://docs.sophos.com/central/Mobile/help/en-us/AdminHelp/MTDWithIXM/ComplianceRules/index.html)
+- [Sophos mobile event type identifiers, quadrantsec/sagan-rules](https://github.com/quadrantsec/sagan-rules/blob/main/sophos.rules)
+- [Wazuh: rules XML syntax](https://documentation.wazuh.com/current/user-manual/ruleset/ruleset-xml-syntax/rules.html)
+- [Wazuh: collecting JSON log data](https://documentation.wazuh.com/current/user-manual/capabilities/log-data-collection/how-it-works.html)

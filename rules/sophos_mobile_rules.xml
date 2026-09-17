@@ -16,13 +16,29 @@
 -->
 
 <!--
-  Sophos Mobile / Sophos Central custom rules - IDs 100600-100649
+  Sophos Mobile / Sophos Central custom rules - IDs 100600-100699
 
-  ORDER MATTERS. Wazuh evaluates sibling rules (same if_sid parent) in file
-  order and keeps the FIRST match - not the most specific one, and not the
-  highest level. So specific rules are placed before generic ones, and the
-  severity-based catch-alls (100602/100603) are deliberately LAST among the
-  children of 100601.
+  LEVEL DECIDES, FILE ORDER ONLY BREAKS TIES.
+
+  Wazuh sorts the children of a rule by LEVEL DESCENDING and keeps the first
+  one that matches. File order is used only among rules of the same level.
+  Verified with `wazuh-logtest -v` on 4.14.7: the children of 100601 are tried
+  as 100648(12), 100641(12), 100642(12), 100652(12), 100603(12), 100643(10),
+  100649(10), 100650(10), 100655(10), 100644(9), 100611(9), ...
+
+  Two consequences when adding a rule here:
+
+    1. A specific rule must have a level GREATER THAN OR EQUAL TO the generic
+       sibling it is meant to beat, or the generic one wins no matter where it
+       sits in the file. 100651 is level 9 rather than 7 for exactly this
+       reason: at 7 it lost to 100611 (level 9).
+    2. The severity fallbacks 100602 (7) and 100603 (12) compete with every
+       other child. Anything that must win over 100603 on a high severity
+       event needs level 12 and must appear before it in the file. That is why
+       100655 is level 12.
+
+  Placing specific rules before generic ones is still the convention here, it
+  just is not what decides the outcome.
 
   ===========================================================================
   VERIFIED against a live Sophos Central tenant (region us03, 2026-08-03):
@@ -44,13 +60,35 @@
   mobile/v1/devices/{id}/installed-apps item:  identifier, name
 
   ===========================================================================
-  NOT VERIFIED - matched by text, not by exact field/type names:
+  CONFIRMED FROM A PUBLIC SOPHOS RULESET, not from this tenant:
 
-  The Event::Endpoint::Mobile::* type identifiers are not documented publicly
-  and this tenant only produced the five listed above. The Android/iOS rules
-  below therefore key off the COMPLIANCE RULE NAMES from Sophos' official
-  docs, which appear in the human-readable event name and in violation
-  payloads, rather than on guessed type strings:
+  Sophos does not document the mobile event type identifiers, but Quadrant's
+  sagan-rules project carries the full list, each cross-referenced to a Sophos
+  KB article. Those identifiers drive the type-based rules below:
+
+    Event::Endpoint::Mobile::NowCompliant
+    Event::Endpoint::Mobile::NowNonCompliant
+      ::0, ::UNKNOWN, ::GENERAL_BLACKLISTED_APPS, ::GENERAL_WHITELISTED_APPS,
+      ::GENERAL_MANDATORY_APPS      (the suffix is the reason)
+    Event::Endpoint::Mobile::Added, ::Enrolled, ::EnrolledNewApp
+    Event::Endpoint::Mobile::Unenrolled, ::UnenrolledByUser
+    Event::Endpoint::Mobile::Action::Succeeded, ::Failed, ::Cancelled, ::Skipped
+    Event::Endpoint::Mobile::EasDataMissing, ::PlaceholderMissing
+    Event::Mobile::ApnsCertificateExpired, ::ApnsCertificateRenewed,
+      ::ApnsCertificateRevoked, ::UserEmailMissing
+    Event::Task::NoApnsCertificate, Event::Task::RenewApnsCertificate::1|2|3
+    Event::Smc::RenewSmcLicense::1|2|3, Event::Smc::AfwNotEnrolled
+
+  Source: https://github.com/quadrantsec/sagan-rules/blob/main/sophos.rules
+
+  ===========================================================================
+  STILL NOT VERIFIED - matched by text, not by exact field names:
+
+  The suffix list above does not cover root, jailbreak, encryption, passcode
+  or OS version, and the payload of a compliance violation has never been
+  observed. Those rules therefore key off the COMPLIANCE RULE NAMES from
+  Sophos' official docs, which appear in the human-readable event name and in
+  violation payloads, rather than on guessed type strings:
 
     Android: "Root access allowed", "Android Debug Bridge (ADB) allowed",
       "Malware apps allowed", "Suspicious apps allowed", "PUAs allowed",
@@ -164,6 +202,23 @@
     <description>Sophos Mobile: device $(sophos.location) is now compliant again.</description>
   </rule>
 
+  <!-- Sophos encodes the REASON for non-compliance as a suffix on the event
+       type. Verified identifiers, see the reference list in the header.
+       These must precede 100611, which matches the generic form. -->
+  <rule id="100650" level="10">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">NowNonCompliant::GENERAL_(BLACKLISTED|WHITELISTED)_APPS</field>
+    <description>Sophos Mobile: device $(sophos.location) is NON-COMPLIANT, forbidden app installed.</description>
+    <group>compliance_violation,mobile_app_inventory,</group>
+  </rule>
+
+  <rule id="100651" level="9">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">NowNonCompliant::GENERAL_MANDATORY_APPS</field>
+    <description>Sophos Mobile: device $(sophos.location) is NON-COMPLIANT, mandatory app not installed.</description>
+    <group>compliance_violation,mobile_app_inventory,</group>
+  </rule>
+
   <!-- Covers both Event::Endpoint::Mobile::NotCompliant (undocumented) and
        the documented generic Event::Endpoint::NonCompliant -->
   <rule id="100611" level="9">
@@ -240,6 +295,69 @@
     <if_sid>100601</if_sid>
     <field name="sophos.type" type="pcre2">(OutOfDate|UpdateFailure)</field>
     <description>Sophos Mobile: device out of date / update failed: $(sophos.location)</description>
+  </rule>
+
+  <!-- ==== MDM platform health ====
+       These do not concern a single device: they break management for a whole
+       platform, so they are worth alerting on even though Sophos files them as
+       routine events. -->
+
+  <!-- iOS management depends on a valid APNs certificate. Once it expires or
+       is revoked every iOS device silently stops accepting MDM commands. -->
+  <rule id="100652" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">ApnsCertificate(Expired|Revoked)</field>
+    <description>Sophos Mobile: APNs certificate expired or revoked, iOS device management is broken.</description>
+    <group>mobile_management,</group>
+  </rule>
+
+  <rule id="100653" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(RenewApnsCertificate|NoApnsCertificate)</field>
+    <description>Sophos Mobile: APNs certificate missing or about to expire: $(sophos.name)</description>
+    <group>mobile_management,</group>
+  </rule>
+
+  <rule id="100654" level="3">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">ApnsCertificateRenewed</field>
+    <description>Sophos Mobile: APNs certificate renewed.</description>
+    <group>mobile_management,</group>
+  </rule>
+
+  <!-- Android enterprise binding lost: no Android device can be managed until
+       Sophos Mobile is registered again as the EMM provider. -->
+  <rule id="100655" level="12">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">AfwNotEnrolled</field>
+    <description>Sophos Mobile: Android enterprise binding lost, Android device management is broken.</description>
+    <group>mobile_management,</group>
+  </rule>
+
+  <rule id="100656" level="7">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">RenewSmcLicense</field>
+    <description>Sophos Mobile: the Sophos Mobile license is about to expire.</description>
+    <group>mobile_management,</group>
+  </rule>
+
+  <rule id="100657" level="5">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Mobile::Action::(Cancelled|Skipped)</field>
+    <description>Sophos Mobile: management action cancelled or skipped on $(sophos.location): $(sophos.name)</description>
+  </rule>
+
+  <rule id="100658" level="3">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">Mobile::EnrolledNewApp</field>
+    <description>Sophos Mobile: new app enrolled on $(sophos.location)</description>
+  </rule>
+
+  <rule id="100659" level="3">
+    <if_sid>100601</if_sid>
+    <field name="sophos.type" type="pcre2">(EasDataMissing|PlaceholderMissing|UserEmailMissing)</field>
+    <description>Sophos Mobile: enrollment data missing for $(sophos.location): $(sophos.name)</description>
+    <group>mobile_management,</group>
   </rule>
 
   <!-- ==== Severity fallbacks. MUST REMAIN LAST among 100601's children:
