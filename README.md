@@ -401,9 +401,21 @@ tighten them to the real keys.
 | `dashboard/load-dashboard.sh` | Imports the dashboard through the API |
 | `dashboard/sophos-mobile-dashboard.ndjson` | Generated saved objects |
 | `tests/rule-tests.sh` | 44 rule tests with `wazuh-logtest` |
+| `docs/build_doc.py`, `docs/doc_content.py` | Generate the customer-facing Word document |
+| `docs/Sophos Mobile integration with Wazuh.docx` | That document, 12 sections plus the full source as an appendix |
 
 **No credentials in the repo.** `credentials.env` is gitignored; only the
 template is versioned.
+
+The Word document under `docs/` is a customer-facing write-up of everything in
+this README plus the full source as an appendix. Its appendices are read from
+the repository at build time, so it cannot drift from the code. Regenerating it
+is optional and needs `python-docx`:
+
+```bash
+pip install python-docx
+python3 docs/build_doc.py "docs/Sophos Mobile integration with Wazuh.docx"
+```
 
 ## License
 
